@@ -77,9 +77,20 @@ def load_resources():
     print("=" * 60)
 
     try:
-        print("Loading embedding model and ChromaDB...")
 
         retrieve.get_vector_store()
+
+        status = retrieve.get_vector_store_status()
+
+        print(
+            f"Knowledge ready    : {status['ready']}"
+        )
+
+        print(
+            f"Knowledge documents: {status['document_count']}"
+        )
+
+        retrieve.run_retrieval_smoke_test()
 
         print("Vector database loaded.")
         print("Bharat AI resources loaded.")
@@ -87,12 +98,16 @@ def load_resources():
     except Exception as error:
 
         print()
-        print("STARTUP WARNING")
+        print("STARTUP ERROR")
         print("-" * 60)
         print(str(error))
         print("-" * 60)
 
         traceback.print_exc()
+
+        # Do not let Railway report a healthy deployment when the
+        # Bharat knowledge database is missing, empty, or unreadable.
+        raise
 
     print("=" * 60)
 
@@ -148,6 +163,7 @@ def create_error_event(message: str):
             {
                 "type": "error",
                 "error": message,
+                "token": message,
             },
             ensure_ascii=False,
         )
@@ -335,11 +351,25 @@ async def ask_question(
 @app.get("/health")
 def health_check():
 
+    vector_status = (
+        retrieve.get_vector_store_status()
+    )
+
     return {
-        "status": "ok",
+        "status": (
+            "ok"
+            if vector_status["ready"]
+            else "degraded"
+        ),
         "service": "Bharat AI",
         "streaming": True,
-        "environment": "local",
+        "knowledge_ready": vector_status["ready"],
+        "knowledge_documents": vector_status["document_count"],
+        "collection": vector_status["collection"],
+        "environment": os.getenv(
+            "RAILWAY_ENVIRONMENT_NAME",
+            "local"
+        ),
     }
 
 

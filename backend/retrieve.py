@@ -28,7 +28,7 @@ ENV_FILE = os.path.join(
 
 load_dotenv(
     ENV_FILE,
-    override=True
+    override=False
 )
 
 
@@ -41,14 +41,39 @@ DB_DIR = os.path.join(
     "chroma_db"
 )
 
+CHROMA_SQLITE_PATH = os.path.join(
+    DB_DIR,
+    "chroma.sqlite3"
+)
+
 
 # ============================================================
 # RAG SETTINGS
 # ============================================================
 
-TOP_K = 6
+TOP_K = int(
+    os.getenv(
+        "RAG_TOP_K",
+        "6"
+    )
+)
 
-THRESHOLD = 1.7
+THRESHOLD = float(
+    os.getenv(
+        "RAG_DISTANCE_THRESHOLD",
+        "1.7"
+    )
+)
+
+CHROMA_COLLECTION = os.getenv(
+    "CHROMA_COLLECTION",
+    "langchain"
+)
+
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "all-MiniLM-L6-v2"
+)
 
 
 # ============================================================
@@ -138,31 +163,207 @@ def get_groq_client():
 # VECTOR STORE
 # ============================================================
 
+def _get_collection_count(
+    vector_store
+) -> int:
+
+    try:
+
+        return int(
+            vector_store
+            ._collection
+            .count()
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Unable to read the Chroma collection count."
+        ) from error
+
+
+def get_vector_store_status():
+
+    document_count = 0
+
+    if _vector_store is not None:
+
+        try:
+
+            document_count = _get_collection_count(
+                _vector_store
+            )
+
+        except Exception:
+
+            document_count = 0
+
+    return {
+        "ready": (
+            _vector_store is not None
+            and document_count > 0
+        ),
+        "database_directory": DB_DIR,
+        "database_directory_exists": os.path.isdir(
+            DB_DIR
+        ),
+        "sqlite_path": CHROMA_SQLITE_PATH,
+        "sqlite_exists": os.path.isfile(
+            CHROMA_SQLITE_PATH
+        ),
+        "collection": CHROMA_COLLECTION,
+        "document_count": document_count,
+        "embedding_model": EMBEDDING_MODEL,
+        "top_k": TOP_K,
+        "distance_threshold": THRESHOLD,
+    }
+
+
 def get_vector_store():
 
     global _embeddings
     global _vector_store
 
-    if _vector_store is None:
+    if _vector_store is not None:
 
-        print(
-            "Loading embedding model and ChromaDB..."
+        return _vector_store
+
+    print(
+        "Loading embedding model and ChromaDB..."
+    )
+
+    print(
+        f"Chroma directory : {DB_DIR}"
+    )
+
+    print(
+        f"Collection       : {CHROMA_COLLECTION}"
+    )
+
+    print(
+        f"Embedding model  : {EMBEDDING_MODEL}"
+    )
+
+    # IMPORTANT:
+    # Chroma can silently create a brand-new empty database when
+    # persist_directory does not exist. Validate the persisted
+    # database BEFORE constructing Chroma so Railway cannot start
+    # successfully with an empty knowledge base.
+
+    if not os.path.isdir(
+        DB_DIR
+    ):
+
+        raise RuntimeError(
+            "Bharat AI knowledge database directory is missing: "
+            f"{DB_DIR}. Make sure backend/chroma_db is included "
+            "in the Railway deployment."
         )
 
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2"
+    if not os.path.isfile(
+        CHROMA_SQLITE_PATH
+    ):
+
+        raise RuntimeError(
+            "Bharat AI Chroma database file is missing: "
+            f"{CHROMA_SQLITE_PATH}. Railway has the code but not "
+            "the persisted Bharat knowledge database."
         )
 
-        _vector_store = Chroma(
-            persist_directory=DB_DIR,
-            embedding_function=_embeddings
+    _embeddings = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL
+    )
+
+    vector_store = Chroma(
+        collection_name=CHROMA_COLLECTION,
+        persist_directory=DB_DIR,
+        embedding_function=_embeddings
+    )
+
+    document_count = _get_collection_count(
+        vector_store
+    )
+
+    if document_count <= 0:
+
+        raise RuntimeError(
+            "The Chroma collection "
+            f"'{CHROMA_COLLECTION}' contains 0 documents. "
+            "The deployed vector database is empty or the wrong "
+            "collection name is being used."
         )
 
-        print(
-            "Embedding model and ChromaDB loaded."
-        )
+    _vector_store = vector_store
+
+    print(
+        "Embedding model and ChromaDB loaded."
+    )
+
+    print(
+        f"Knowledge documents: {document_count}"
+    )
+
+    print(
+        f"RAG top-k          : {TOP_K}"
+    )
+
+    print(
+        f"Distance threshold : {THRESHOLD}"
+    )
 
     return _vector_store
+
+
+def run_retrieval_smoke_test():
+
+    vector_store = get_vector_store()
+
+    try:
+
+        results = (
+            vector_store
+            .similarity_search_with_score(
+                "Bharat Sirmal",
+                k=1
+            )
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Chroma loaded, but a retrieval smoke test failed."
+        ) from error
+
+    if not results:
+
+        raise RuntimeError(
+            "Chroma contains documents, but the retrieval smoke "
+            "test returned no results."
+        )
+
+    doc, score = results[0]
+
+    source = doc.metadata.get(
+        "source",
+        "Unknown"
+    )
+
+    print(
+        "Retrieval smoke test passed."
+    )
+
+    print(
+        f"Smoke-test source : {source}"
+    )
+
+    print(
+        f"Smoke-test score  : {score:.4f}"
+    )
+
+    return {
+        "source": source,
+        "score": float(score),
+    }
 
 
 # ============================================================
@@ -1066,30 +1267,6 @@ def stream_answer(
     )
 
 
-    # ========================================================
-    # DATABASE CHECK
-    # ========================================================
-
-    if not os.path.exists(
-        DB_DIR
-    ):
-
-        answer = (
-            "System error: Vector database "
-            "not initialized."
-        )
-
-        memory.add_exchange(
-            session_id,
-            user_question,
-            answer
-        )
-
-        yield answer
-
-        return
-
-
     try:
 
         # ====================================================
@@ -1174,8 +1351,18 @@ def stream_answer(
 
 
         # ====================================================
-        # BEST SCORE
+        # RELEVANCE FILTER
         # ====================================================
+
+        # Chroma's similarity_search_with_score returns a distance
+        # for this store: lower is better. Keep only chunks that
+        # actually pass the configured distance threshold.
+
+        relevant_results = [
+            (doc, score)
+            for doc, score in results
+            if score <= THRESHOLD
+        ]
 
         best_score = results[0][1]
 
@@ -1186,12 +1373,12 @@ def stream_answer(
             f"{best_score:.4f}"
         )
 
+        print(
+            f"Relevant chunks: "
+            f"{len(relevant_results)} / {len(results)}"
+        )
 
-        # ====================================================
-        # RELEVANCE CHECK
-        # ====================================================
-
-        if best_score > THRESHOLD:
+        if not relevant_results:
 
             answer = (
                 "I don't have that information "
@@ -1214,12 +1401,12 @@ def stream_answer(
         # ====================================================
 
         context = build_context(
-            results
+            relevant_results
         )
 
         print(
             f"Context contains "
-            f"{len(results)} chunks."
+            f"{len(relevant_results)} relevant chunks."
         )
 
 
