@@ -1,0 +1,23 @@
+# Python virtual environment
+backend/venv/
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ChromaDB
+chroma_db/
+
+# Environment variables
+.env
+.env.local
+
+# Node
+node_modules/
+.next/
+
+# Logs
+*.log

@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pdfplumber
+langchain
+langchain-community
+requests
+sentence-transformers
+chromadb
+pydantic
+google-genai
+python-dotenv
+groq
+piper-tts
