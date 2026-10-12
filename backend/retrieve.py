@@ -1,5 +1,7 @@
 import os
 import re
+from pathlib import Path
+from threading import RLock
 from typing import Generator
 
 from dotenv import load_dotenv
@@ -103,6 +105,52 @@ _embeddings = None
 _vector_store = None
 
 _groq_client = None
+_pdf_signature = None
+_knowledge_lock = RLock()
+
+
+def refresh_pdf_knowledge(vector_store):
+    """Refresh changed PDFs, including edits made while the backend is running."""
+    global _pdf_signature
+    data_dir = Path(BASE_DIR) / "data"
+    if not data_dir.is_dir():
+        return  # Support deployments that ship only the persisted database.
+    with _knowledge_lock:
+        signature = tuple(
+            (p.name, p.stat().st_mtime_ns, p.stat().st_size)
+            for p in sorted(data_dir.iterdir()) if p.suffix.lower() == ".pdf"
+        )
+        if signature != _pdf_signature:
+            from ingest import synchronize_vector_database
+            synchronize_vector_database(vector_store)
+            _pdf_signature = signature
+
+
+def retrieve_knowledge(vector_store, question):
+    """Search topic PDFs explicitly so broad questions don't miss whole projects."""
+    q = question.lower()
+    sources = []
+    if re.search(r"\b(resume|cv|skills?|technologies|tech stack)\b", q):
+        sources.append("Resume.pdf")
+    if re.search(r"\bprojects?\b", q):
+        sources.extend(["Bharat_Sirmal_03_Projects.pdf", "Resume.pdf"])
+    if sources:
+        source_filter = {"source": {"$in": sorted(set(sources))}}
+        count = len(vector_store.get(where=source_filter)["ids"])
+        if count:
+            results = vector_store.similarity_search_with_score(
+                question, k=count, filter=source_filter
+            )
+            if any(score <= THRESHOLD for _, score in results):
+                # A topic question needs the whole source, including adjacent
+                # chunks that do not repeat its project name or section heading.
+                return results
+        return []
+    return [
+        (doc, score)
+        for doc, score in vector_store.similarity_search_with_score(question, k=TOP_K)
+        if score <= THRESHOLD
+    ]
 
 
 # ============================================================
@@ -225,7 +273,7 @@ def get_vector_store():
     global _vector_store
 
     if _vector_store is not None:
-
+        refresh_pdf_knowledge(_vector_store)
         return _vector_store
 
     print(
@@ -279,6 +327,8 @@ def get_vector_store():
         persist_directory=DB_DIR,
         embedding_function=_embeddings
     )
+
+    refresh_pdf_knowledge(vector_store)
 
     document_count = _get_collection_count(
         vector_store
@@ -1293,13 +1343,7 @@ def stream_answer(
 
         print("=" * 60)
 
-        results = (
-            vector_store
-            .similarity_search_with_score(
-                user_question,
-                k=TOP_K
-            )
-        )
+        results = retrieve_knowledge(vector_store, user_question)
 
 
         # ====================================================
@@ -1354,15 +1398,10 @@ def stream_answer(
         # RELEVANCE FILTER
         # ====================================================
 
-        # Chroma's similarity_search_with_score returns a distance
-        # for this store: lower is better. Keep only chunks that
-        # actually pass the configured distance threshold.
+        # retrieve_knowledge applies the distance threshold and expands
+        # matching topic sources to preserve complete project/resume details.
 
-        relevant_results = [
-            (doc, score)
-            for doc, score in results
-            if score <= THRESHOLD
-        ]
+        relevant_results = results
 
         best_score = results[0][1]
 

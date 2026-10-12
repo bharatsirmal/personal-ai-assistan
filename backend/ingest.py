@@ -1,6 +1,7 @@
 import os
-import shutil
+import hashlib
 import pdfplumber
+from dotenv import load_dotenv
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -16,6 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 
 # ============================================================
@@ -104,7 +106,7 @@ def load_all_pdfs():
         if not text:
 
             print("  WARNING: No text extracted.")
-            continue
+            raise ValueError(f"No readable text in {filename}; keeping the existing index.")
 
         print(
             f"  Extracted {len(text)} characters."
@@ -162,27 +164,43 @@ def split_documents(documents):
 # CREATE CHROMA DATABASE
 # ============================================================
 
+def synchronize_vector_database(vector_store, chunks=None):
+    """Add current PDF chunks before removing obsolete ones; never delete the DB."""
+    if chunks is None:
+        chunks = split_documents(load_all_pdfs())
+    if not chunks:
+        raise ValueError("No PDF chunks available; keeping the existing index.")
+    ids = []
+    for index, chunk in enumerate(chunks):
+        chunk.metadata["chunk_index"] = index
+        content = chunk.metadata["source"] + "\0" + str(index) + "\0" + chunk.page_content
+        ids.append(hashlib.sha256(content.encode("utf-8")).hexdigest())
+    existing = set(vector_store.get()["ids"])
+    missing = [(chunk_id, chunk) for chunk_id, chunk in zip(ids, chunks) if chunk_id not in existing]
+    if missing:
+        vector_store.add_documents(
+            [chunk for _, chunk in missing], ids=[chunk_id for chunk_id, _ in missing]
+        )
+    obsolete = existing - set(ids)
+    if obsolete:
+        vector_store.delete(ids=list(obsolete))
+    return vector_store
+
+
 def create_vector_database(chunks):
 
     print()
     print("Loading embedding model...")
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2"
+        model_name=os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     )
 
     print("Embedding model loaded.")
 
     # --------------------------------------------------------
-    # Remove old database
+    # Open the existing database and synchronize its documents
     # --------------------------------------------------------
-
-    if os.path.exists(DB_DIR):
-
-        print()
-        print("Removing old ChromaDB...")
-
-        shutil.rmtree(DB_DIR)
 
     # --------------------------------------------------------
     # Create new database
@@ -191,14 +209,12 @@ def create_vector_database(chunks):
     print()
     print("Creating ChromaDB...")
 
-    vector_store = Chroma.from_documents(
-
-        documents=chunks,
-
-        embedding=embeddings,
-
+    vector_store = Chroma(
+        collection_name=os.getenv("CHROMA_COLLECTION", "langchain"),
+        embedding_function=embeddings,
         persist_directory=DB_DIR
     )
+    synchronize_vector_database(vector_store, chunks)
 
     print()
     print("ChromaDB created successfully.")
