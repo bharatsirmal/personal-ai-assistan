@@ -7,6 +7,8 @@ from pydantic import BaseModel
 import os
 import json
 import traceback
+import logging
+from time import perf_counter
 
 import retrieve
 
@@ -175,80 +177,26 @@ def create_error_event(message: str):
 # STREAM GENERATOR
 # ============================================================
 
-def generate_stream(
-    question: str,
-    session_id: str,
-    voice: bool = False,
-):
-
-    print()
-    print("=" * 60)
-    print("SESSION:", session_id)
-    print("=" * 60)
-
+def generate_stream(question: str, session_id: str, voice: bool = False):
+    started = perf_counter()
+    metrics = {}
+    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics)
     try:
-
-        # ====================================================
-        # CALL RETRIEVAL + LLM STREAM
-        # ====================================================
-
-        stream = retrieve.stream_answer(
-            question,
-            session_id,
-        )
-
-        # ====================================================
-        # FORWARD EVERY MODEL CHUNK IMMEDIATELY
-        # ====================================================
-
         for chunk in stream:
-
-            if chunk is None:
-                continue
-
-            if not isinstance(chunk, str):
-                chunk = str(chunk)
-
             if not chunk:
                 continue
-
-            # IMPORTANT:
-            #
-            # No artificial delay.
-            # No fake typing.
-            # No word-by-word generation.
-            #
-            # The chunk comes directly from retrieve.py
-            # and is immediately sent to the browser.
-
-            yield create_token_event(chunk)
-
-        # ====================================================
-        # STREAM COMPLETE
-        # ====================================================
-
-        print()
-        print("STREAM COMPLETED")
-        print("=" * 60)
-
-        yield create_done_event()
-
-    except Exception as error:
-
-        print()
-        print("=" * 60)
-        print("STREAMING ERROR")
-        print("=" * 60)
-        print(str(error))
-        print("=" * 60)
-
-        traceback.print_exc()
-
-        yield create_error_event(
-            "I'm having trouble processing that request right now."
-        )
-
-        yield create_done_event()
+            if "first_token_ms" not in metrics:
+                metrics["first_token_ms"] = round((perf_counter() - started) * 1000)
+            yield create_token_event(str(chunk))
+    except Exception:
+        logging.exception("Answer streaming failed")
+        yield create_error_event("I'm having trouble processing that request right now. Please try again.")
+    finally:
+        stream.close()
+        metrics["total_ms"] = round((perf_counter() - started) * 1000)
+        logging.getLogger("uvicorn.error").info("Answer timing: %s", metrics)
+    yield json.dumps({"type": "metrics", **metrics}) + "\n"
+    yield create_done_event()
 
 
 # ============================================================

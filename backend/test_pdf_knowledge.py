@@ -1,14 +1,56 @@
 """Offline regressions: python -m unittest test_pdf_knowledge."""
 import unittest
+import json
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
 
 import ingest
 import retrieve
+import main
 
 
 class PdfKnowledgeTests(unittest.TestCase):
+    def test_specific_xai_question_keeps_retrieval_bounded(self):
+        store = Mock()
+        store.similarity_search_with_score.return_value = [(Document(page_content="MRI Grad-CAM"), 0.8)]
+        retrieve.retrieve_knowledge(store, "explain the bharat xai project")
+        store.get.assert_not_called()
+        self.assertEqual(store.similarity_search_with_score.call_args.kwargs["k"], retrieve.TOP_K)
+        self.assertIn("Brain Tumor", store.similarity_search_with_score.call_args.args[0])
+
+    def test_reasoning_and_stream_cleanup(self):
+        client = Mock()
+        stream = Mock()
+        stream.__iter__ = Mock(return_value=iter([
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello"))])
+        ]))
+        client.chat.completions.create.return_value = stream
+        with patch.object(retrieve, "get_groq_client", return_value=client), \
+             patch.object(retrieve, "GROQ_MODEL", "openai/gpt-oss-120b"):
+            response = retrieve.stream_groq("question")
+            self.assertEqual(next(response), "Hello")
+            response.close()
+        stream.close.assert_called_once()
+        options = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(options["reasoning_effort"], "low")
+        self.assertEqual(options["messages"][0]["role"], "system")
+
+    def test_error_is_not_an_answer_token(self):
+        def failing_stream(*args, **kwargs):
+            yield "Useful partial answer."
+            raise RuntimeError("offline failure")
+        with patch.object(retrieve, "stream_answer", side_effect=failing_stream):
+            events = [json.loads(line) for line in main.generate_stream("question", "test", True)]
+        self.assertEqual([e["type"] for e in events], ["token", "error", "metrics", "done"])
+        self.assertIn("first_token_ms", events[2])
+
+    def test_voice_instruction_and_bounded_history(self):
+        prompt = retrieve.build_final_prompt("Explain XAI", "MRI", "x" * 12000, voice=True)
+        self.assertIn("2-4 short", prompt)
+        self.assertLess(len(prompt), 5000)
+
     def test_resume_question_searches_resume_and_keeps_continuation(self):
         store = Mock()
         store.get.return_value = {"ids": ["first", "continuation"]}
