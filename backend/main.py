@@ -135,6 +135,16 @@ class ChatRequest(BaseModel):
 
     recruiter_revision: str | None = None
 
+    history: list["HistoryMessage"] | None = Field(default=None, max_length=12)
+
+
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=12000)
+
+
+ChatRequest.model_rebuild()
+
 
 class RecruiterTextRequest(BaseModel):
     session_id: str
@@ -238,11 +248,11 @@ def create_error_event(message: str):
 # STREAM GENERATOR
 # ============================================================
 
-def generate_stream(question: str, session_id: str, voice: bool = False, language: str = "en", job_context=None):
+def generate_stream(question: str, session_id: str, voice: bool = False, language: str = "en", job_context=None, history=None):
     language = resolve_language(question, language)
     started = perf_counter()
     metrics = {}
-    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics, language=language, job_context=job_context)
+    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics, language=language, job_context=job_context, history=history)
     try:
         yield json.dumps({"type": "language", "language": language}) + "\n"
         for chunk in stream:
@@ -300,6 +310,8 @@ async def ask_question(
         session_id = "default"
 
     job_context = recruiter.get_context(session_id)
+    if request.history is not None and sum(len(message.content) for message in request.history) > 24000:
+        raise HTTPException(400, "Conversation history is too long.")
     if request.recruiter_revision and (not job_context or job_context["revision"] != request.recruiter_revision):
         raise HTTPException(409, "The job description expired or changed. Reattach it before asking another recruiter question.")
 
@@ -330,6 +342,7 @@ async def ask_question(
             voice=request.voice,
             language=request.language,
             job_context=job_context,
+            history=[message.model_dump() for message in request.history] if request.history is not None else None,
         ),
 
         # Your Assistant.tsx already reads the response

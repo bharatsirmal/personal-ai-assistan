@@ -1110,6 +1110,7 @@ def stream_answer(
     metrics: dict | None = None,
     language: str = "en",
     job_context: dict | None = None,
+    history: list | None = None,
 ):
 
     language = resolve_language(user_question or "", language)
@@ -1188,13 +1189,16 @@ def stream_answer(
 
     metrics = metrics if metrics is not None else {}
     started = perf_counter()
-    previous_memory = build_memory_context(session_id)
+    previous_memory = build_memory_context(session_id) if history is None else "\n".join(
+        ("User: " if message["role"] == "user" else "Jojo: ") + message["content"]
+        for message in history
+    )
     vector_store = get_vector_store()
     # Resolve short follow-ups without making another model call.
     retrieval_question = user_question
     if re.search(r"\b(it|its|that|this|they|their|those|he|him|his|more)\b|उस|वह|वो|इसके|उसे|त्यो|उनी|त्यस|यस|उहाँ|और बताओ", user_question.lower()):
-        history = memory.get_memory(session_id)
-        previous_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        prior_messages = memory.get_memory(session_id) if history is None else history
+        previous_user = next((m["content"] for m in reversed(prior_messages) if m["role"] == "user"), "")
         if previous_user:
             retrieval_question = previous_user[-500:] + " " + user_question
     translation_started = perf_counter()

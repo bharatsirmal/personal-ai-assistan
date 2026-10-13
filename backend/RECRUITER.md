@@ -1,10 +1,20 @@
 # Recruiter conversations
 
-Open **Recruiter · Add job description** above the chat composer. Upload a searchable
+Open the **+** button inside the chat composer. Upload a searchable
 PDF, DOCX or UTF-8 TXT, paste requirements, or dictate them and review the transcript.
 Attach them, then ask questions through the normal text or voice controls. English,
 Hindi and Nepali use the existing language detection and device speech support.
 The language dropdown remains hidden.
+
+Sent user messages have an **Edit** action. **Save & resend** replaces that turn and
+its later replies, sends only the preceding conversation as context and generates
+a fresh answer. Earlier messages remain available; the current attachment applies
+to the edited question. Job replacement/removal also resets the context boundary
+in browser history, so old-role assessments do not return after reloading the chat.
+
+Answers render Markdown tables, lists and code blocks. Tables scroll horizontally
+on narrow screens. Common HTML formatting tags are normalized to Markdown outside
+code examples; raw HTML execution is disabled.
 
 Questions are open-ended. There is no fixed list of supported hiring questions:
 the model receives the current employer requirements, Bharat's documented evidence,
@@ -67,8 +77,8 @@ spoken style and begin speaking as complete sentences arrive.
 Deploy the backend and frontend together. No additional Python dependencies or
 API keys are needed. Keep the current backend on a single worker/replica.
 
-Run `venv/Scripts/python.exe -m unittest test_recruiter test_conversation test_pdf_knowledge`
-in the backend and `node --test scripts/voice-stream.test.mjs`, TypeScript checking
+Run `venv/Scripts/python.exe -m unittest test_chat_edit test_recruiter test_conversation test_pdf_knowledge`
+in the backend and `node --test scripts/chat-format.test.mjs scripts/voice-stream.test.mjs`, TypeScript checking
 and `npm run build` in the frontend. Recruiter integration tests use synthetic job
 documents and mocked generation; they do not send private PDFs to an external model.
 
