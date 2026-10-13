@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal
 from conversation import resolve_language
 
@@ -13,6 +14,8 @@ import logging
 from time import perf_counter
 
 import retrieve
+import recruiter
+import memory
 
 
 # ============================================================
@@ -122,13 +125,67 @@ def load_resources():
 
 class ChatRequest(BaseModel):
 
-    question: str
+    question: str = Field(min_length=1, max_length=12000)
 
     voice: bool = False
 
     language: Literal["en", "hi", "ne"] = "en"
 
     session_id: str = "default"
+
+    recruiter_revision: str | None = None
+
+
+class RecruiterTextRequest(BaseModel):
+    session_id: str
+    text: str = Field(min_length=20, max_length=recruiter.MAX_CHARS)
+
+
+@app.get("/recruiter/context")
+def recruiter_status(session_id: str):
+    try:
+        recruiter.validate_session(session_id)
+        return {"context": recruiter.public_context(recruiter.get_context(session_id))}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/recruiter/context")
+def recruiter_text(request: RecruiterTextRequest):
+    try:
+        result = recruiter.save_context(request.session_id, request.text)
+        memory.clear_memory(request.session_id)
+        return {"context": recruiter.public_context(result)}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/recruiter/upload")
+async def recruiter_upload(request: Request, session_id: str, filename: str):
+    try:
+        recruiter.validate_session(session_id)
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > recruiter.MAX_BYTES:
+                raise HTTPException(413, "Upload a file up to 5 MB.")
+        text = await run_in_threadpool(recruiter.extract_document, bytes(data), filename)
+        result = recruiter.save_context(session_id, text, filename)
+        memory.clear_memory(session_id)
+        return {"context": recruiter.public_context(result)}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.delete("/recruiter/context")
+def recruiter_delete(session_id: str):
+    try:
+        recruiter.validate_session(session_id)
+        recruiter.remove_context(session_id)
+        memory.clear_memory(session_id)
+        return {"context": None}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 # ============================================================
@@ -181,11 +238,11 @@ def create_error_event(message: str):
 # STREAM GENERATOR
 # ============================================================
 
-def generate_stream(question: str, session_id: str, voice: bool = False, language: str = "en"):
+def generate_stream(question: str, session_id: str, voice: bool = False, language: str = "en", job_context=None):
     language = resolve_language(question, language)
     started = perf_counter()
     metrics = {}
-    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics, language=language)
+    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics, language=language, job_context=job_context)
     try:
         yield json.dumps({"type": "language", "language": language}) + "\n"
         for chunk in stream:
@@ -198,7 +255,9 @@ def generate_stream(question: str, session_id: str, voice: bool = False, languag
         logging.exception("Answer streaming failed")
         yield create_error_event("I'm having trouble processing that request right now. Please try again.")
     finally:
-        stream.close()
+        close = getattr(stream, "close", None)
+        if close:
+            close()
         metrics["total_ms"] = round((perf_counter() - started) * 1000)
         logging.getLogger("uvicorn.error").info("Answer timing: %s", metrics)
     yield json.dumps({"type": "metrics", **metrics}) + "\n"
@@ -240,6 +299,10 @@ async def ask_question(
     if not session_id:
         session_id = "default"
 
+    job_context = recruiter.get_context(session_id)
+    if request.recruiter_revision and (not job_context or job_context["revision"] != request.recruiter_revision):
+        raise HTTPException(409, "The job description expired or changed. Reattach it before asking another recruiter question.")
+
     # ========================================================
     # LOG REQUEST
     # ========================================================
@@ -248,14 +311,6 @@ async def ask_question(
     print("=" * 60)
     print("NEW STREAMING QUESTION")
     print("=" * 60)
-
-    print(
-        f"Question: {question}"
-    )
-
-    print(
-        f"Session: {session_id}"
-    )
 
     print(
         f"Voice: {request.voice}"
@@ -274,6 +329,7 @@ async def ask_question(
             session_id=session_id,
             voice=request.voice,
             language=request.language,
+            job_context=job_context,
         ),
 
         # Your Assistant.tsx already reads the response

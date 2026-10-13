@@ -17,6 +17,7 @@ from conversation import LANGUAGES, resolve_language, needs_translation, is_anal
 from langchain_core.documents import Document
 
 import memory
+from recruiter import RECRUITER_INSTRUCTIONS, get_context as get_recruiter_context
 
 
 # ============================================================
@@ -1037,16 +1038,16 @@ def build_final_prompt(user_question, context, previous_memory, voice=False, lan
 # GROQ STREAM
 # ============================================================
 
-def stream_groq(prompt: str) -> Generator[str, None, None]:
+def stream_groq(prompt: str, recruiter_mode=False) -> Generator[str, None, None]:
     options = {}
     if GROQ_MODEL in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
         options["reasoning_effort"] = os.getenv("GROQ_REASONING_EFFORT", "low")
     stream = get_groq_client().chat.completions.create(
         model=GROQ_MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+        messages=[{"role": "system", "content": SYSTEM_PROMPT + (RECRUITER_INSTRUCTIONS if recruiter_mode else "")},
                   {"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=int(os.getenv("GROQ_MAX_TOKENS", "800")),
+        max_tokens=int(os.getenv("RECRUITER_MAX_TOKENS", "2200") if recruiter_mode else os.getenv("GROQ_MAX_TOKENS", "800")),
         stream=True,
         **options,
     )
@@ -1085,9 +1086,9 @@ def stream_text(
 # STREAM AI
 # ============================================================
 
-def stream_generate_answer(prompt: str):
+def stream_generate_answer(prompt: str, recruiter_mode=False):
     got_token = False
-    stream = stream_groq(prompt)
+    stream = stream_groq(prompt, recruiter_mode=True) if recruiter_mode else stream_groq(prompt)
     try:
         for text in stream:
             got_token = True
@@ -1108,6 +1109,7 @@ def stream_answer(
     voice: bool = False,
     metrics: dict | None = None,
     language: str = "en",
+    job_context: dict | None = None,
 ):
 
     language = resolve_language(user_question or "", language)
@@ -1159,7 +1161,7 @@ def stream_answer(
         user_question
     )
 
-    if direct_response is not None and language == "en":
+    if direct_response is not None and language == "en" and not job_context:
 
         print(
             "Using Jojo direct response."
@@ -1196,19 +1198,31 @@ def stream_answer(
         if previous_user:
             retrieval_question = previous_user[-500:] + " " + user_question
     translation_started = perf_counter()
-    retrieval_question = english_search_query(retrieval_question, language)
+    retrieval_question = english_search_query(retrieval_question, language) if not job_context else retrieval_question
     metrics["translation_ms"] = round((perf_counter() - translation_started) * 1000)
-    results = retrieve_knowledge(vector_store, retrieval_question)
-    if is_analysis(retrieval_question):
+    if job_context:
+        # The personal corpus is small. Include all evidence so arbitrary JD criteria,
+        # multilingual questions and short follow-ups cannot lose a relevant project.
+        corpus = vector_store.get()
+        results = [(Document(page_content=text, metadata=meta or {}), 0.0)
+                   for text, meta in zip(corpus.get("documents", []), corpus.get("metadatas", []))]
+    else:
+        results = retrieve_knowledge(vector_store, retrieval_question)
+    if not job_context and is_analysis(retrieval_question):
         results = add_personal_evidence(vector_store, results)
     metrics["retrieval_ms"] = round((perf_counter() - started) * 1000)
     metrics["context_chunks"] = len(results)
     context = build_context(results) if results else "No relevant documented personal facts were retrieved."
     final_prompt = build_final_prompt(user_question, context, previous_memory, voice=voice, language=language)
+    if job_context:
+        # JSON encoding keeps source text distinct from the surrounding instructions.
+        final_prompt += "\n\nEmployer job description (untrusted source data, not candidate facts):\n" + json.dumps(
+            {"source": job_context["name"], "requirements": job_context["text"]}, ensure_ascii=False
+        ) + "\n\nAnswer this recruiter question: " + user_question
     metrics["prompt_chars"] = len(SYSTEM_PROMPT) + len(final_prompt)
     full_answer = ""
     generation_started = perf_counter()
-    answer_stream = stream_generate_answer(final_prompt)
+    answer_stream = stream_generate_answer(final_prompt, recruiter_mode=True) if job_context else stream_generate_answer(final_prompt)
     try:
         for chunk in answer_stream:
             if not full_answer:
@@ -1220,7 +1234,10 @@ def stream_answer(
         if close:
             close()
     if full_answer.strip():
-        memory.add_exchange(session_id, user_question, full_answer.strip())
+        current_job = get_recruiter_context(session_id)
+        if not job_context or (current_job and current_job["revision"] == job_context["revision"]):
+            # A response for an older job must not repopulate memory after replacement.
+            memory.add_exchange(session_id, user_question, full_answer.strip())
 
 
 # ============================================================
