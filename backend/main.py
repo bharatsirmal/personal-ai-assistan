@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Literal
+from conversation import resolve_language
 
 import os
 import json
@@ -124,6 +126,8 @@ class ChatRequest(BaseModel):
 
     voice: bool = False
 
+    language: Literal["en", "hi", "ne"] = "en"
+
     session_id: str = "default"
 
 
@@ -177,11 +181,13 @@ def create_error_event(message: str):
 # STREAM GENERATOR
 # ============================================================
 
-def generate_stream(question: str, session_id: str, voice: bool = False):
+def generate_stream(question: str, session_id: str, voice: bool = False, language: str = "en"):
+    language = resolve_language(question, language)
     started = perf_counter()
     metrics = {}
-    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics)
+    stream = retrieve.stream_answer(question, session_id, voice=voice, metrics=metrics, language=language)
     try:
+        yield json.dumps({"type": "language", "language": language}) + "\n"
         for chunk in stream:
             if not chunk:
                 continue
@@ -267,6 +273,7 @@ async def ask_question(
             question=question,
             session_id=session_id,
             voice=request.voice,
+            language=request.language,
         ),
 
         # Your Assistant.tsx already reads the response

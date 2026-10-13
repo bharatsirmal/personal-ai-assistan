@@ -30,7 +30,7 @@ or microphone-device benchmark is implied by passing offline tests.
 
 ## Verification and release
 
-Backend: `venv/Scripts/python.exe -m unittest test_pdf_knowledge`
+Backend: `venv/Scripts/python.exe -m unittest test_pdf_knowledge test_conversation`
 
 Portfolio frontend (Node 22.18+):
 
@@ -47,3 +47,22 @@ speaking before the last text arrives. Test Stop response, mic interruption,
 switching chats mid-answer, and consecutive voice turns. Browser/OS speech voices
 and recognition endpointing still affect audio quality and latency; this uses the
 existing browser speech pipeline, not a native audio model.
+
+## Reasoning and languages
+
+The assistant can reason about hypothetical situations using documented evidence,
+offer explicitly conditional advice, and answer general questions. Missing personal
+facts remain unknown; invented anecdotes and guaranteed interview outcomes are forbidden.
+
+The composer offers English (default), Hindi and Nepali. Requests such as "Can you
+talk in Hindi?" update the selected language for replies and subsequent microphone
+turns. Hindi and Nepali speech uses matching device voices and recognizes Devanagari
+sentence endings. A missing device voice or unsupported recognition language is
+reported visibly; text still works. Test recognition and playback on the intended
+device, because browser voice/recognition language availability varies.
+
+The API accepts `language: "en" | "hi" | "ne"` and emits a `language` event before
+text tokens. Hindi/Nepali questions are translated to an English search query with
+Groq to match the existing English embedding index; this adds a model call, measured
+as `translation_ms`. Answer generation receives the original question and requested
+language. Install requirements (including `tzdata`) for current India/Nepal clock data.

@@ -43,8 +43,8 @@ class PdfKnowledgeTests(unittest.TestCase):
             raise RuntimeError("offline failure")
         with patch.object(retrieve, "stream_answer", side_effect=failing_stream):
             events = [json.loads(line) for line in main.generate_stream("question", "test", True)]
-        self.assertEqual([e["type"] for e in events], ["token", "error", "metrics", "done"])
-        self.assertIn("first_token_ms", events[2])
+        self.assertEqual([e["type"] for e in events], ["language", "token", "error", "metrics", "done"])
+        self.assertIn("first_token_ms", events[3])
 
     def test_voice_instruction_and_bounded_history(self):
         prompt = retrieve.build_final_prompt("Explain XAI", "MRI", "x" * 12000, voice=True)
