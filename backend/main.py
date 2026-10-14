@@ -38,6 +38,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Context-Revision"],
 )
 
 
@@ -312,8 +313,13 @@ async def ask_question(
     job_context = recruiter.get_context(session_id)
     if request.history is not None and sum(len(message.content) for message in request.history) > 24000:
         raise HTTPException(400, "Conversation history is too long.")
-    if request.recruiter_revision and (not job_context or job_context["revision"] != request.recruiter_revision):
+    captured = await run_in_threadpool(recruiter.capture_chat_requirements, question, session_id)
+    if not captured and request.recruiter_revision and (not job_context or job_context["revision"] != request.recruiter_revision):
         raise HTTPException(409, "The job description expired or changed. Reattach it before asking another recruiter question.")
+
+    if captured:
+        job_context = captured
+        memory.clear_memory(session_id)
 
     # ========================================================
     # LOG REQUEST
@@ -342,7 +348,7 @@ async def ask_question(
             voice=request.voice,
             language=request.language,
             job_context=job_context,
-            history=[message.model_dump() for message in request.history] if request.history is not None else None,
+            history=[] if captured else ([message.model_dump() for message in request.history] if request.history is not None else None),
         ),
 
         # Your Assistant.tsx already reads the response
@@ -351,6 +357,7 @@ async def ask_question(
         media_type="application/x-ndjson",
 
         headers={
+            "X-Context-Revision": job_context["revision"] if job_context else "",
             "Cache-Control": (
                 "no-cache, "
                 "no-store, "

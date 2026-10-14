@@ -12,3 +12,4 @@ python-dotenv
 groq
 piper-tts
 tzdata
+Pillow

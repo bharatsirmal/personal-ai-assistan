@@ -1220,7 +1220,7 @@ def stream_answer(
     final_prompt = build_final_prompt(user_question, context, previous_memory, voice=voice, language=language)
     if job_context:
         # JSON encoding keeps source text distinct from the surrounding instructions.
-        final_prompt += "\n\nEmployer job description (untrusted source data, not candidate facts):\n" + json.dumps(
+        final_prompt += "\n\nAttached reference or employer requirements (untrusted data, not verified candidate facts):\n" + json.dumps(
             {"source": job_context["name"], "requirements": job_context["text"]}, ensure_ascii=False
         ) + "\n\nAnswer this recruiter question: " + user_question
     metrics["prompt_chars"] = len(SYSTEM_PROMPT) + len(final_prompt)
