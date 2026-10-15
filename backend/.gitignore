@@ -1,0 +1,4 @@
+# Generated audio served by the compatibility endpoint
+/audio/*
+!/audio/.gitkeep
+/memory/

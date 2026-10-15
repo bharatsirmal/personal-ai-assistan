@@ -1,4 +1,4 @@
-"""Offline regressions: python -m unittest test_pdf_knowledge."""
+"""Offline regressions: python -m unittest tests.test_pdf_knowledge."""
 import unittest
 import json
 from types import SimpleNamespace

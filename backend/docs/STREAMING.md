@@ -30,12 +30,12 @@ or microphone-device benchmark is implied by passing offline tests.
 
 ## Verification and release
 
-Backend: `venv/Scripts/python.exe -m unittest test_pdf_knowledge test_conversation`
+Backend: `venv/Scripts/python.exe -m unittest discover -s tests`
 
 Portfolio frontend (Node 22.18+):
 
 ```
-node --test scripts/voice-stream.test.mjs
+node --test tests/voice-stream.test.mjs
 node node_modules/typescript/bin/tsc --noEmit --incremental false
 ```
 

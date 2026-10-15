@@ -94,8 +94,8 @@ validation. The existing Groq key is used for vision. `GROQ_VISION_MODEL` defaul
 `qwen/qwen3.8-27b`, currently documented in [Groq's vision guide](https://console.groq.com/docs/vision).
 Your account must have access to that model. Keep one backend worker/replica.
 
-Run `venv/Scripts/python.exe -m unittest test_attachments test_chat_edit test_recruiter test_conversation test_pdf_knowledge`
-in the backend and `node --test scripts/attachments.test.mjs scripts/chat-format.test.mjs scripts/voice-stream.test.mjs`, TypeScript checking
+Run `venv/Scripts/python.exe -m unittest discover -s tests`
+in the backend and `node --test tests/attachments.test.mjs tests/chat-format.test.mjs tests/voice-stream.test.mjs`, TypeScript checking
 and `npm run build` in the frontend. Recruiter integration tests use synthetic job
 documents and mocked generation; they do not send private PDFs to an external model.
 
